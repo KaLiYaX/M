@@ -22,17 +22,9 @@ const DATA_DIR = path.join(__dirname, 'data');
 const HISTORY_FILE = path.join(DATA_DIR, 'processed_videos.json');
 const ANALYTICS_FILE = path.join(DATA_DIR, 'analytics.json');
 
-if (!TELEGRAM_TOKEN || !PAGE_ACCESS_TOKEN || PAGE_IDS.length === 0) {
+if (!TELEGRAM_TOKEN || !PAGE_ACCESS_TOKEN || !PAGE_ID) {
   console.error('❌ Missing required environment variables!');
-  console.log('Required: TELEGRAM_TOKEN, PAGE_ACCESS_TOKEN, PAGE_ID');
-  console.log('Format for multiple pages: PAGE_ID=123,456,789');
-  console.log('Optional: PAGE_NAMES=Page1,Page2,Page3');
   process.exit(1);
-}
-
-// Create default page names if not provided
-while (PAGE_NAMES.length < PAGE_IDS.length) {
-  PAGE_NAMES.push(`Page ${PAGE_NAMES.length + 1}`);
 }
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
@@ -51,8 +43,7 @@ let analytics = {
   duplicatesSkipped: 0,
   searchesPerformed: 0,
   startTime: Date.now(),
-  lastSaved: null,
-  pageStats: {} // Track stats per page
+  lastSaved: null
 };
 const scheduledPosts = [];
 const userSessions = new Map();
@@ -216,8 +207,7 @@ function getUserSession(userId) {
       lastVideoData: null,
       pendingDuplicates: [],
       searchResults: [],
-      lastSearchQuery: null,
-      selectedPages: PAGE_IDS.length === 1 ? [0] : [] // Auto-select if only one page
+      lastSearchQuery: null
     });
   }
   return userSessions.get(userId);
@@ -293,31 +283,9 @@ const keyboards = {
     inline_keyboard: [
       [{ text: '🔍 Search Videos', callback_data: 'search_videos' }, { text: '📹 Add by URL', callback_data: 'add_video' }],
       [{ text: '📋 View Queue', callback_data: 'view_queue' }, { text: '📊 Analytics', callback_data: 'analytics' }],
-      [{ text: '📄 Select Pages', callback_data: 'select_pages' }, { text: '⚙️ Settings', callback_data: 'settings' }],
-      [{ text: '❓ Help', callback_data: 'help' }]
+      [{ text: '⚙️ Settings', callback_data: 'settings' }, { text: '❓ Help', callback_data: 'help' }]
     ]
   }),
-  
-  pageSelection: (selectedPages) => {
-    const buttons = [];
-    
-    PAGE_IDS.forEach((pageId, index) => {
-      const isSelected = selectedPages.includes(index);
-      const pageName = PAGE_NAMES[index] || `Page ${index + 1}`;
-      buttons.push([{
-        text: `${isSelected ? '✅' : '⬜'} ${pageName}`,
-        callback_data: `toggle_page_${index}`
-      }]);
-    });
-    
-    buttons.push([
-      { text: '✅ Select All', callback_data: 'select_all_pages' },
-      { text: '❌ Deselect All', callback_data: 'deselect_all_pages' }
-    ]);
-    buttons.push([{ text: '🔙 Main Menu', callback_data: 'main_menu' }]);
-    
-    return { inline_keyboard: buttons };
-  },
   
   searchResults: (results, page = 0, totalPages = 1) => {
     const buttons = [];
@@ -405,11 +373,6 @@ bot.onText(/\/start/, (msg) => {
 
 🤖 *YouTube to Facebook Bot - ULTIMATE*
 
-📄 *Multi-Page Support*
-✅ ${PAGE_IDS.length} page(s) configured
-✅ Post to multiple pages at once
-✅ Select pages per video
-
 ✨ *NEW: Search Feature!*
 🔍 Search videos directly in bot
 🖼️ Preview with thumbnails
@@ -425,12 +388,8 @@ bot.onText(/\/start/, (msg) => {
 ✅ Persistent history 💾
 ✅ YouTube thumbnails 🖼️
 
-*Configured Pages:*
-${PAGE_IDS.map((id, i) => `${i + 1}. ${PAGE_NAMES[i]}`).join('\n')}
-
 *Features:*
 🔍 Search & preview before adding
-📄 Post to multiple pages
 💾 Data saved automatically
 🔄 Survives bot restarts
 🔍 Smart duplicate detection
@@ -462,79 +421,6 @@ bot.on('callback_query', async (query) => {
         chat_id: msg.chat.id, message_id: msg.message_id,
         parse_mode: 'Markdown', reply_markup: keyboards.main()
       });
-    }
-    
-    else if (data === 'select_pages') {
-      const selectedCount = session.selectedPages.length;
-      await bot.editMessageText(
-        `📄 *Select Pages*\n\n` +
-        `Selected: ${selectedCount}/${PAGE_IDS.length}\n\n` +
-        `Videos will be posted to all selected pages.\n\n` +
-        `Click to toggle:`,
-        {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id,
-          parse_mode: 'Markdown',
-          reply_markup: keyboards.pageSelection(session.selectedPages)
-        }
-      );
-    }
-    
-    else if (data.startsWith('toggle_page_')) {
-      const pageIndex = parseInt(data.replace('toggle_page_', ''));
-      const idx = session.selectedPages.indexOf(pageIndex);
-      
-      if (idx > -1) {
-        session.selectedPages.splice(idx, 1);
-      } else {
-        session.selectedPages.push(pageIndex);
-      }
-      
-      const selectedCount = session.selectedPages.length;
-      await bot.editMessageText(
-        `📄 *Select Pages*\n\n` +
-        `Selected: ${selectedCount}/${PAGE_IDS.length}\n\n` +
-        `Videos will be posted to all selected pages.\n\n` +
-        `Click to toggle:`,
-        {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id,
-          parse_mode: 'Markdown',
-          reply_markup: keyboards.pageSelection(session.selectedPages)
-        }
-      );
-    }
-    
-    else if (data === 'select_all_pages') {
-      session.selectedPages = PAGE_IDS.map((_, i) => i);
-      await bot.editMessageText(
-        `📄 *Select Pages*\n\n` +
-        `Selected: ${session.selectedPages.length}/${PAGE_IDS.length}\n\n` +
-        `Videos will be posted to all selected pages.\n\n` +
-        `Click to toggle:`,
-        {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id,
-          parse_mode: 'Markdown',
-          reply_markup: keyboards.pageSelection(session.selectedPages)
-        }
-      );
-    }
-    
-    else if (data === 'deselect_all_pages') {
-      session.selectedPages = [];
-      await bot.editMessageText(
-        `📄 *Select Pages*\n\n` +
-        `Selected: 0/${PAGE_IDS.length}\n\n` +
-        `Videos will be posted to all selected pages.\n\n` +
-        `Click to toggle:`,
-        {
-          chat_id: msg.chat.id,
-          message_id: msg.message_id,
-          parse_mode: 'Markdown',
-          reply_markup: keyboards.pageSelection(session.selectedPages)
-        }
-      );
     }
     
     else if (data === 'search_videos') {
@@ -642,13 +528,6 @@ bot.on('callback_query', async (query) => {
         return bot.answerCallbackQuery(query.id, { text: '❌ Video not found' });
       }
       
-      if (session.selectedPages.length === 0) {
-        return bot.answerCallbackQuery(query.id, { 
-          text: '⚠️ Please select at least one page first!', 
-          show_alert: true 
-        });
-      }
-      
       const isDuplicate = isAlreadyProcessed(video.videoId);
       const forceDuplicate = data.startsWith('confirm_duplicate_');
       
@@ -659,14 +538,11 @@ bot.on('callback_query', async (query) => {
         });
       }
       
-      addToQueue(msg.chat.id, video.url, session.selectedQuality, from.first_name, video.type, video.videoId, forceDuplicate, session.selectedPages);
+      addToQueue(msg.chat.id, video.url, session.selectedQuality, from.first_name, video.type, video.videoId, forceDuplicate);
       
       const icon = video.type === 'shorts' ? '📱' : '🎬';
-      const pageNames = session.selectedPages.map(i => PAGE_NAMES[i]).join(', ');
-      
       await bot.sendMessage(msg.chat.id,
-        `✅ *Added to Queue!*\n\n${icon} ${video.title.substring(0, 50)}...\n\n` +
-        `📄 Will post to:\n${pageNames}\n\n⏳ Processing will start soon.`,
+        `✅ *Added to Queue!*\n\n${icon} ${video.title.substring(0, 50)}...\n\n⏳ Processing will start soon.`,
         {
           parse_mode: 'Markdown',
           reply_markup: { inline_keyboard: [[{ text: '📋 View Queue', callback_data: 'view_queue' }]] }
@@ -726,15 +602,6 @@ bot.on('callback_query', async (query) => {
       const avgSize = analytics.totalVideos > 0 ? (analytics.totalSize / analytics.totalVideos).toFixed(2) : 0;
       const successRate = analytics.totalVideos > 0 ? ((analytics.successfulPosts / analytics.totalVideos) * 100).toFixed(1) : 0;
       
-      let pageStatsText = '';
-      if (Object.keys(analytics.pageStats).length > 0) {
-        pageStatsText = '\n\n📄 *Per Page Stats:*\n';
-        PAGE_IDS.forEach((pageId, index) => {
-          const stats = analytics.pageStats[pageId] || { success: 0, failed: 0 };
-          pageStatsText += `${PAGE_NAMES[index]}: ✅${stats.success} ❌${stats.failed}\n`;
-        });
-      }
-      
       await bot.editMessageText(`
 📊 *Analytics*
 
@@ -752,7 +619,7 @@ bot.on('callback_query', async (query) => {
 ⏱️ Uptime: ${uptime} min
 📋 Queue: ${videoQueue.length}
 🗂️ History: ${processedVideos.size} videos
-${pageStatsText}
+
 💾 Last Saved: ${analytics.lastSaved ? new Date(analytics.lastSaved).toLocaleString() : 'Never'}
       `, {
         chat_id: msg.chat.id, message_id: msg.message_id, parse_mode: 'Markdown',
@@ -1014,16 +881,6 @@ bot.on('message', async (msg) => {
   const matches = detectYouTubeUrl(msg.text);
   if (matches.length === 0) return;
 
-  if (session.selectedPages.length === 0) {
-    return bot.sendMessage(msg.chat.id,
-      `⚠️ *No Pages Selected!*\n\nPlease select at least one page to post to.`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: [[{ text: '📄 Select Pages', callback_data: 'select_pages' }]] }
-      }
-    );
-  }
-
   const newVideos = [];
   const duplicates = [];
   const inQueue = [];
@@ -1039,7 +896,7 @@ bot.on('message', async (msg) => {
   });
 
   newVideos.forEach(m => {
-    addToQueue(msg.chat.id, m.url, session.selectedQuality, msg.from.first_name, m.type, m.videoId, false, session.selectedPages);
+    addToQueue(msg.chat.id, m.url, session.selectedQuality, msg.from.first_name, m.type, m.videoId);
   });
 
   if (duplicates.length > 0) {
@@ -1068,14 +925,12 @@ bot.on('message', async (msg) => {
   if (newVideos.length > 0) {
     const shorts = newVideos.filter(m => m.type === 'shorts').length;
     const regular = newVideos.length - shorts;
-    const pageNames = session.selectedPages.map(i => PAGE_NAMES[i]).join(', ');
     
     let text = `✅ *${newVideos.length} added!*\n\n`;
     if (regular > 0) text += `🎬 Videos: ${regular}\n`;
     if (shorts > 0) text += `📱 Shorts: ${shorts}\n`;
-    text += `\n📄 Will post to:\n${pageNames}`;
     
-    const addedMsg = await bot.sendMessage(msg.chat.id, text + '\n\n⏳ Processing...', { parse_mode: 'Markdown' });
+    const addedMsg = await bot.sendMessage(msg.chat.id, text + '\n⏳ Processing...', { parse_mode: 'Markdown' });
 
     setTimeout(async () => {
       try {
@@ -1094,15 +949,14 @@ bot.on('message', async (msg) => {
 // QUEUE & PROCESSING
 // ============================================
 
-function addToQueue(chatId, url, quality, userName, type, videoId, forceDuplicate = false, selectedPages = [0]) {
+function addToQueue(chatId, url, quality, userName, type, videoId, forceDuplicate = false) {
   videoQueue.push({
     chatId, youtubeUrl: url, quality, userName, videoId,
     type: type || 'regular',
     status: 'pending',
     addedAt: Date.now(),
     title: null,
-    isDuplicate: forceDuplicate,
-    selectedPages: [...selectedPages] // Store which pages to post to
+    isDuplicate: forceDuplicate
   });
   if (type === 'shorts') analytics.shortsCount++;
 }
@@ -1115,7 +969,7 @@ async function processQueue() {
 
   try {
     const session = getUserSession(next.chatId);
-    await processVideo(next.chatId, next.youtubeUrl, next.quality, next.userName, session.customCaption, next.type, next.videoId, next.selectedPages);
+    await processVideo(next.chatId, next.youtubeUrl, next.quality, next.userName, session.customCaption, next.type, next.videoId);
     next.status = 'completed';
     
     processedVideos.add(next.videoId);
@@ -1131,15 +985,14 @@ async function processQueue() {
   setTimeout(processQueue, 2000);
 }
 
-async function processVideo(chatId, url, quality, userName, customCaption, type, videoId, selectedPages = [0]) {
+async function processVideo(chatId, url, quality, userName, customCaption, type, videoId) {
   const icon = type === 'shorts' ? '📱' : '🎬';
   let progressMsg;
   
   try {
     // Initial message
-    const pageNames = selectedPages.map(i => PAGE_NAMES[i]).join(', ');
     progressMsg = await bot.sendMessage(chatId, 
-      `⏳ *Fetching ${type === 'shorts' ? 'Short' : 'Video'} Info...*\n\n${icon} Please wait...\n\n📄 Pages: ${pageNames}`,
+      `⏳ *Fetching ${type === 'shorts' ? 'Short' : 'Video'} Info...*\n\n${icon} Please wait...`,
       { parse_mode: 'Markdown', reply_markup: keyboards.downloadControl(videoId, false) }
     );
 
@@ -1283,13 +1136,11 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
 
     activeDownloads.delete(videoId);
 
-    // Upload to Facebook - Multiple Pages
-    const pageNames = selectedPages.map(i => PAGE_NAMES[i]).join(', ');
+    // Upload to Facebook
     await bot.editMessageText(
       `${icon} *Uploading to Facebook...*\n\n${title.substring(0, 45)}...\n\n` +
       `📦 Size: ${formatBytes(totalBytes)}\n` +
       `${thumbnailBuffer ? '🖼️ Thumbnail: Included\n' : ''}` +
-      `📄 Pages: ${pageNames}\n` +
       `📊 Progress: 0%\n${getProgressBar(0)}`,
       {
         chat_id: chatId,
@@ -1299,80 +1150,16 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
     );
 
     const caption = customCaption || title;
-    
-    // Upload to each selected page
-    const uploadResults = [];
-    for (let i = 0; i < selectedPages.length; i++) {
-      const pageIndex = selectedPages[i];
-      const pageId = PAGE_IDS[pageIndex];
-      const pageName = PAGE_NAMES[pageIndex];
-      
-      await bot.editMessageText(
-        `${icon} *Uploading to ${pageName}...*\n\n${title.substring(0, 45)}...\n\n` +
-        `📦 Size: ${formatBytes(totalBytes)}\n` +
-        `${thumbnailBuffer ? '🖼️ Thumbnail: Included\n' : ''}` +
-        `📄 Progress: ${i + 1}/${selectedPages.length} pages\n` +
-        `📊 ${Math.floor(((i) / selectedPages.length) * 100)}%\n${getProgressBar(Math.floor(((i) / selectedPages.length) * 100))}`,
-        {
-          chat_id: chatId,
-          message_id: progressMsg.message_id,
-          parse_mode: 'Markdown'
-        }
-      );
-      
-      try {
-        const result = await uploadVideoToFacebook(
-          Buffer.from(videoBuffer), 
-          caption, 
-          chatId, 
-          progressMsg.message_id, 
-          title, 
-          icon, 
-          totalBytes, 
-          thumbnailBuffer,
-          pageId,
-          pageName
-        );
-        
-        uploadResults.push({ page: pageName, success: true, data: result });
-        
-        // Update page stats
-        if (!analytics.pageStats[pageId]) {
-          analytics.pageStats[pageId] = { success: 0, failed: 0 };
-        }
-        analytics.pageStats[pageId].success++;
-        
-      } catch (error) {
-        console.error(`❌ Failed to upload to ${pageName}:`, error.message);
-        uploadResults.push({ page: pageName, success: false, error: error.message });
-        
-        // Update page stats
-        if (!analytics.pageStats[pageId]) {
-          analytics.pageStats[pageId] = { success: 0, failed: 0 };
-        }
-        analytics.pageStats[pageId].failed++;
-      }
-    }
+    await uploadVideoToFacebook(Buffer.from(videoBuffer), caption, chatId, progressMsg.message_id, title, icon, totalBytes, thumbnailBuffer);
 
-    const successCount = uploadResults.filter(r => r.success).length;
-    const failedCount = uploadResults.filter(r => !r.success).length;
-    
-    if (successCount > 0) analytics.successfulPosts++;
-    if (failedCount === selectedPages.length) analytics.failedPosts++;
+    analytics.successfulPosts++;
 
-    let resultText = `${successCount > 0 ? '✅' : '❌'} *Upload ${successCount > 0 ? 'Complete' : 'Failed'}!*\n\n${icon} ${title.substring(0, 50)}...\n\n` +
+    await bot.editMessageText(
+      `✅ *Posted Successfully!*\n\n${icon} ${title.substring(0, 50)}...\n\n` +
       `📦 Size: ${formatBytes(totalBytes)}\n` +
       `${thumbnailBuffer ? '🖼️ Thumbnail: Added\n' : ''}` +
-      `🆔 Video ID: \`${videoId}\`\n\n` +
-      `📄 *Results:*\n`;
-    
-    uploadResults.forEach(r => {
-      resultText += `${r.success ? '✅' : '❌'} ${r.page}\n`;
-    });
-    
-    resultText += `\n⏱️ Completed: ${new Date().toLocaleTimeString()}`;
-
-    await bot.editMessageText(resultText,
+      `🆔 Video ID: \`${videoId}\`\n` +
+      `⏱️ Completed: ${new Date().toLocaleTimeString()}`,
       {
         chat_id: chatId,
         message_id: progressMsg.message_id,
@@ -1412,12 +1199,12 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
 // FACEBOOK UPLOAD WITH PROGRESS & THUMBNAIL
 // ============================================
 
-async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, videoTitle, icon, totalBytes, thumbnailBuffer = null, pageId, pageName) {
+async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, videoTitle, icon, totalBytes, thumbnailBuffer = null) {
   try {
-    console.log(`🚀 Uploading to Facebook page: ${pageName} (${pageId})...`);
+    console.log('🚀 Uploading to Facebook...');
     
     // Initialize upload session
-    const initResponse = await axios.post(`https://graph.facebook.com/v18.0/${pageId}/videos`, null, {
+    const initResponse = await axios.post(`https://graph.facebook.com/v18.0/${PAGE_ID}/videos`, null, {
       params: { 
         upload_phase: 'start', 
         access_token: PAGE_ACCESS_TOKEN, 
@@ -1432,7 +1219,7 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
     let offset = 0;
     let lastPercent = -1;
     let lastUploadUpdate = Date.now();
-    const MIN_UPLOAD_UPDATE_INTERVAL = 5000; // Slower updates for multi-page
+    const MIN_UPLOAD_UPDATE_INTERVAL = 3000;
 
     while (offset < videoBuffer.length) {
       const chunk = videoBuffer.slice(offset, Math.min(offset + chunkSize, videoBuffer.length));
@@ -1441,7 +1228,7 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
       const timeSinceLastUpdate = now - lastUploadUpdate;
 
       const shouldUpdate = (percent !== lastPercent && timeSinceLastUpdate >= MIN_UPLOAD_UPDATE_INTERVAL) || 
-                          timeSinceLastUpdate >= 15000;
+                          timeSinceLastUpdate >= 10000;
 
       if (shouldUpdate) {
         lastPercent = percent;
@@ -1449,7 +1236,7 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
         
         try {
           await bot.editMessageText(
-            `${icon} *Uploading to ${pageName}*\n\n${videoTitle.substring(0, 45)}...\n\n` +
+            `${icon} *Uploading to Facebook*\n\n${videoTitle.substring(0, 45)}...\n\n` +
             `📦 Size: ${formatBytes(totalBytes)}\n` +
             `${thumbnailBuffer ? '🖼️ Thumbnail: Ready\n' : ''}` +
             `📤 Uploaded: ${formatBytes(offset)}\n` +
@@ -1477,9 +1264,9 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
         contentType: 'video/mp4' 
       });
 
-      console.log(`📤 ${pageName}: ${percent}%`);
+      console.log(`📤 Uploading: ${percent}%`);
 
-      await axios.post(`https://graph.facebook.com/v18.0/${pageId}/videos`, formData, {
+      await axios.post(`https://graph.facebook.com/v18.0/${PAGE_ID}/videos`, formData, {
         headers: formData.getHeaders(),
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
@@ -1490,6 +1277,20 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
     }
 
     // Finalize upload
+    await bot.editMessageText(
+      `${icon} *Finalizing Upload...*\n\n${videoTitle.substring(0, 45)}...\n\n` +
+      `📦 Size: ${formatBytes(totalBytes)}\n` +
+      `${thumbnailBuffer ? '🖼️ Thumbnail: Uploading...\n' : ''}` +
+      `📊 Progress: 100%\n${getProgressBar(100)}\n\n` +
+      `⏳ Processing on Facebook...`,
+      {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown'
+      }
+    );
+
+    // Finish params with thumbnail support
     const finishParams = {
       upload_phase: 'finish',
       access_token: PAGE_ACCESS_TOKEN,
@@ -1500,9 +1301,10 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
 
     // Upload thumbnail if available
     if (thumbnailBuffer) {
-      console.log(`🖼️ Uploading thumbnail to ${pageName}...`);
+      console.log('🖼️ Uploading thumbnail...');
       
       try {
+        // Upload thumbnail as multipart form data
         const thumbnailFormData = new FormData();
         for (const [key, value] of Object.entries(finishParams)) {
           thumbnailFormData.append(key, value);
@@ -1513,7 +1315,7 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
         });
 
         const finishResponse = await axios.post(
-          `https://graph.facebook.com/v18.0/${pageId}/videos`, 
+          `https://graph.facebook.com/v18.0/${PAGE_ID}/videos`, 
           thumbnailFormData,
           {
             headers: thumbnailFormData.getHeaders(),
@@ -1522,30 +1324,33 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
           }
         );
 
-        console.log(`✅ Published with thumbnail to ${pageName}! ID:`, finishResponse.data.id);
+        console.log('✅ Published with thumbnail! ID:', finishResponse.data.id);
         return finishResponse.data;
         
       } catch (thumbError) {
-        console.error(`⚠️ Thumbnail upload failed for ${pageName}:`, thumbError.message);
+        console.error('⚠️ Thumbnail upload failed:', thumbError.message);
+        console.log('📤 Uploading without thumbnail...');
         
-        const finishResponse = await axios.post(`https://graph.facebook.com/v18.0/${pageId}/videos`, null, {
+        // Fallback: upload without thumbnail
+        const finishResponse = await axios.post(`https://graph.facebook.com/v18.0/${PAGE_ID}/videos`, null, {
           params: finishParams
         });
 
-        console.log(`✅ Published without thumbnail to ${pageName}! ID:`, finishResponse.data.id);
+        console.log('✅ Published without thumbnail! ID:', finishResponse.data.id);
         return finishResponse.data;
       }
     } else {
-      const finishResponse = await axios.post(`https://graph.facebook.com/v18.0/${pageId}/videos`, null, {
+      // No thumbnail available
+      const finishResponse = await axios.post(`https://graph.facebook.com/v18.0/${PAGE_ID}/videos`, null, {
         params: finishParams
       });
 
-      console.log(`✅ Published to ${pageName}! ID:`, finishResponse.data.id);
+      console.log('✅ Published! ID:', finishResponse.data.id);
       return finishResponse.data;
     }
 
   } catch (error) {
-    console.error(`❌ Facebook error for ${pageName}:`, error.response?.data || error.message);
+    console.error('❌ Facebook error:', error.response?.data || error.message);
     throw new Error(error.response?.data?.error?.message || 'Facebook upload failed');
   }
 }
@@ -1561,13 +1366,9 @@ async function initializeBot() {
   await loadProcessedVideos();
   await loadAnalytics();
   
-  console.log('✅ Bot ready! ULTIMATE MODE with Multi-Page, Search & Thumbnail support enabled 📄🔍🖼️🚀');
+  console.log('✅ Bot ready! ULTIMATE MODE with Search & Thumbnail support enabled 🔍🖼️🚀');
   console.log(`📊 Loaded: ${processedVideos.size} videos, ${analytics.totalVideos} total processed`);
   console.log(`🔍 Total searches performed: ${analytics.searchesPerformed}`);
-  console.log(`📄 Configured pages: ${PAGE_IDS.length}`);
-  PAGE_IDS.forEach((id, i) => {
-    console.log(`   ${i + 1}. ${PAGE_NAMES[i]} (ID: ${id})`);
-  });
 }
 
 initializeBot().catch(error => {
@@ -1603,4 +1404,4 @@ async function gracefulShutdown() {
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
 
-console.log('✅ Bot script loaded - ULTIMATE MODE with MULTI-PAGE, SEARCH & THUMBNAIL SUPPORT 📄🔍🖼️🚀');
+console.log('✅ Bot script loaded - ULTIMATE MODE with SEARCH & THUMBNAIL SUPPORT 🔍🖼️🚀');
