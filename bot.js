@@ -42,7 +42,7 @@ let analytics = {
 };
 const scheduledPosts = [];
 const userSessions = new Map();
-const activeDownloads = new Map(); // Track active downloads for pause/resume
+const activeDownloads = new Map();
 
 // ============================================
 // FILE MANAGEMENT
@@ -203,6 +203,29 @@ function getProgressBar(percent) {
 }
 
 // ============================================
+// DOWNLOAD THUMBNAIL
+// ============================================
+
+async function downloadThumbnail(thumbnailUrl) {
+  try {
+    console.log('🖼️ Downloading thumbnail from:', thumbnailUrl);
+    
+    const response = await axios.get(thumbnailUrl, {
+      responseType: 'arraybuffer',
+      timeout: 30000
+    });
+    
+    const buffer = Buffer.from(response.data);
+    console.log('✅ Thumbnail downloaded:', formatBytes(buffer.length));
+    
+    return buffer;
+  } catch (error) {
+    console.error('❌ Thumbnail download error:', error.message);
+    return null;
+  }
+}
+
+// ============================================
 // KEYBOARDS
 // ============================================
 
@@ -275,6 +298,7 @@ bot.onText(/\/start/, (msg) => {
 ✅ Auto posting to Facebook
 ✅ Duplicate detection 🔍
 ✅ Persistent history 💾
+✅ YouTube thumbnails 🖼️
 
 *Features:*
 💾 Data saved automatically
@@ -283,6 +307,7 @@ bot.onText(/\/start/, (msg) => {
 ⏯️ Pause/Resume downloads
 📊 Progress updates every 3-10s
 🚀 Unlimited file sizes
+🖼️ Auto thumbnail from YouTube
 
 *Supported URLs:*
 🔗 youtube.com/watch?v=...
@@ -313,7 +338,7 @@ bot.on('callback_query', async (query) => {
     
     else if (data === 'add_video') {
       await bot.editMessageText(
-        '📹 *Add Video - UNLIMITED*\n\n✅ No size limits\n✅ Shorts & Regular videos 📱\n✅ Pause/Resume support ⏯️\n✅ Smart progress (3-10s)\n🔍 Duplicate detection enabled\n\nSend YouTube links:',
+        '📹 *Add Video - UNLIMITED*\n\n✅ No size limits\n✅ Shorts & Regular videos 📱\n✅ Pause/Resume support ⏯️\n✅ Smart progress (3-10s)\n🔍 Duplicate detection enabled\n🖼️ Auto thumbnail support\n\nSend YouTube links:',
         { chat_id: msg.chat.id, message_id: msg.message_id, parse_mode: 'Markdown',
           reply_markup: { inline_keyboard: [[{ text: '🔙 Back', callback_data: 'main_menu' }]] }
         }
@@ -547,6 +572,7 @@ bot.on('callback_query', async (query) => {
 ⏰ Schedule posts
 ✍️ Custom captions
 🎬 Quality selection
+🖼️ Auto YouTube thumbnails
 
 *Data Storage:*
 💾 Auto-saves every 5 minutes
@@ -707,6 +733,7 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
     const title = videoData.metadata.title;
     const fileSize = videoData.download.size;
     const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
+    const thumbnailUrl = videoData.metadata.thumbnail || videoData.metadata.image;
 
     analytics.totalVideos++;
     analytics.totalSize += parseFloat(fileSizeMB);
@@ -714,10 +741,27 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
     const queueItem = videoQueue.find(v => v.videoId === videoId);
     if (queueItem) queueItem.title = title;
 
+    // Download thumbnail
+    let thumbnailBuffer = null;
+    if (thumbnailUrl) {
+      await bot.editMessageText(
+        `🖼️ *Downloading Thumbnail...*\n\n${title.substring(0, 45)}...\n\n` +
+        `📦 Video Size: ${formatBytes(fileSize)}`,
+        {
+          chat_id: chatId, 
+          message_id: progressMsg.message_id, 
+          parse_mode: 'Markdown'
+        }
+      );
+      
+      thumbnailBuffer = await downloadThumbnail(thumbnailUrl);
+    }
+
     // Download with progress tracking
     await bot.editMessageText(
-      `${icon} *Downloading*\n\n${title.substring(0, 45)}...\n\n` +
+      `${icon} *Downloading Video*\n\n${title.substring(0, 45)}...\n\n` +
       `📦 Size: ${formatBytes(fileSize)}\n` +
+      `${thumbnailBuffer ? '🖼️ Thumbnail: Ready\n' : ''}` +
       `📊 Progress: 0%\n${getProgressBar(0)}\n` +
       `⚡ Speed: Initializing...`,
       {
@@ -742,7 +786,7 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
 
     const videoResponse = await axios.get(videoData.download.url, {
       responseType: 'stream',
-      timeout: 0, // No timeout
+      timeout: 0,
       maxContentLength: Infinity,
       maxBodyLength: Infinity
     });
@@ -752,10 +796,9 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
 
     let lastPercent = -1;
     let lastUpdateTime = Date.now();
-    const MIN_UPDATE_INTERVAL = 3000; // 3 seconds minimum between updates
+    const MIN_UPDATE_INTERVAL = 3000;
 
     videoResponse.data.on('data', async (chunk) => {
-      // Check if paused
       while (downloadState.paused && !downloadState.cancelled) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
@@ -774,9 +817,6 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
       const speed = downloadState.downloadedBytes / elapsed;
       const timeSinceLastUpdate = now - lastUpdateTime;
 
-      // Update only if:
-      // 1. Percent changed AND at least 3 seconds passed
-      // 2. OR 10 seconds passed (force update)
       const shouldUpdate = (percent !== lastPercent && timeSinceLastUpdate >= MIN_UPDATE_INTERVAL) || 
                           timeSinceLastUpdate >= 10000;
 
@@ -790,8 +830,9 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
 
         try {
           await bot.editMessageText(
-            `${icon} *Downloading*\n\n${title.substring(0, 45)}...\n\n` +
+            `${icon} *Downloading Video*\n\n${title.substring(0, 45)}...\n\n` +
             `📦 Size: ${formatBytes(totalBytes)}\n` +
+            `${thumbnailBuffer ? '🖼️ Thumbnail: Ready\n' : ''}` +
             `📥 Downloaded: ${formatBytes(downloadState.downloadedBytes)}\n` +
             `📊 Progress: ${percent}%\n${getProgressBar(percent)}\n` +
             `⚡ Speed: ${formatSpeed(speed)}\n` +
@@ -804,7 +845,6 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
             }
           );
         } catch (err) {
-          // Ignore edit errors (Telegram rate limit)
           if (err.response?.body?.error_code === 429) {
             console.log('⚠️ Rate limited, skipping update');
           }
@@ -829,6 +869,7 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
     await bot.editMessageText(
       `${icon} *Uploading to Facebook...*\n\n${title.substring(0, 45)}...\n\n` +
       `📦 Size: ${formatBytes(totalBytes)}\n` +
+      `${thumbnailBuffer ? '🖼️ Thumbnail: Included\n' : ''}` +
       `📊 Progress: 0%\n${getProgressBar(0)}`,
       {
         chat_id: chatId,
@@ -838,13 +879,14 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
     );
 
     const caption = customCaption || title;
-    await uploadVideoToFacebook(Buffer.from(videoBuffer), caption, chatId, progressMsg.message_id, title, icon, totalBytes);
+    await uploadVideoToFacebook(Buffer.from(videoBuffer), caption, chatId, progressMsg.message_id, title, icon, totalBytes, thumbnailBuffer);
 
     analytics.successfulPosts++;
 
     await bot.editMessageText(
       `✅ *Posted Successfully!*\n\n${icon} ${title.substring(0, 50)}...\n\n` +
       `📦 Size: ${formatBytes(totalBytes)}\n` +
+      `${thumbnailBuffer ? '🖼️ Thumbnail: Added\n' : ''}` +
       `🆔 Video ID: \`${videoId}\`\n` +
       `⏱️ Completed: ${new Date().toLocaleTimeString()}`,
       {
@@ -883,10 +925,10 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
 }
 
 // ============================================
-// FACEBOOK UPLOAD WITH PROGRESS
+// FACEBOOK UPLOAD WITH PROGRESS & THUMBNAIL
 // ============================================
 
-async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, videoTitle, icon, totalBytes) {
+async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, videoTitle, icon, totalBytes, thumbnailBuffer = null) {
   try {
     console.log('🚀 Uploading to Facebook...');
     
@@ -906,7 +948,7 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
     let offset = 0;
     let lastPercent = -1;
     let lastUploadUpdate = Date.now();
-    const MIN_UPLOAD_UPDATE_INTERVAL = 3000; // 3 seconds between updates
+    const MIN_UPLOAD_UPDATE_INTERVAL = 3000;
 
     while (offset < videoBuffer.length) {
       const chunk = videoBuffer.slice(offset, Math.min(offset + chunkSize, videoBuffer.length));
@@ -914,9 +956,6 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
       const now = Date.now();
       const timeSinceLastUpdate = now - lastUploadUpdate;
 
-      // Update only if:
-      // 1. Percent changed AND at least 3 seconds passed
-      // 2. OR 10 seconds passed (force update)
       const shouldUpdate = (percent !== lastPercent && timeSinceLastUpdate >= MIN_UPLOAD_UPDATE_INTERVAL) || 
                           timeSinceLastUpdate >= 10000;
 
@@ -928,6 +967,7 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
           await bot.editMessageText(
             `${icon} *Uploading to Facebook*\n\n${videoTitle.substring(0, 45)}...\n\n` +
             `📦 Size: ${formatBytes(totalBytes)}\n` +
+            `${thumbnailBuffer ? '🖼️ Thumbnail: Ready\n' : ''}` +
             `📤 Uploaded: ${formatBytes(offset)}\n` +
             `📊 Progress: ${percent}%\n${getProgressBar(percent)}`,
             {
@@ -937,7 +977,6 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
             }
           );
         } catch (err) {
-          // Ignore edit errors (Telegram rate limit)
           if (err.response?.body?.error_code === 429) {
             console.log('⚠️ Upload: Rate limited, skipping update');
           }
@@ -960,7 +999,7 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
         headers: formData.getHeaders(),
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
-        timeout: 0 // No timeout
+        timeout: 0
       });
 
       offset += chunk.length;
@@ -970,6 +1009,7 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
     await bot.editMessageText(
       `${icon} *Finalizing Upload...*\n\n${videoTitle.substring(0, 45)}...\n\n` +
       `📦 Size: ${formatBytes(totalBytes)}\n` +
+      `${thumbnailBuffer ? '🖼️ Thumbnail: Uploading...\n' : ''}` +
       `📊 Progress: 100%\n${getProgressBar(100)}\n\n` +
       `⏳ Processing on Facebook...`,
       {
@@ -979,18 +1019,64 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
       }
     );
 
-    const finishResponse = await axios.post(`https://graph.facebook.com/v18.0/${PAGE_ID}/videos`, null, {
-      params: {
-        upload_phase: 'finish',
-        access_token: PAGE_ACCESS_TOKEN,
-        upload_session_id: uploadSessionId,
-        title: title,
-        description: title
-      }
-    });
+    // Finish params with thumbnail support
+    const finishParams = {
+      upload_phase: 'finish',
+      access_token: PAGE_ACCESS_TOKEN,
+      upload_session_id: uploadSessionId,
+      title: title,
+      description: title
+    };
 
-    console.log('✅ Published! ID:', finishResponse.data.id);
-    return finishResponse.data;
+    // Upload thumbnail if available
+    if (thumbnailBuffer) {
+      console.log('🖼️ Uploading thumbnail...');
+      
+      try {
+        // Upload thumbnail as multipart form data
+        const thumbnailFormData = new FormData();
+        for (const [key, value] of Object.entries(finishParams)) {
+          thumbnailFormData.append(key, value);
+        }
+        thumbnailFormData.append('thumb', thumbnailBuffer, {
+          filename: 'thumbnail.jpg',
+          contentType: 'image/jpeg'
+        });
+
+        const finishResponse = await axios.post(
+          `https://graph.facebook.com/v18.0/${PAGE_ID}/videos`, 
+          thumbnailFormData,
+          {
+            headers: thumbnailFormData.getHeaders(),
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity
+          }
+        );
+
+        console.log('✅ Published with thumbnail! ID:', finishResponse.data.id);
+        return finishResponse.data;
+        
+      } catch (thumbError) {
+        console.error('⚠️ Thumbnail upload failed:', thumbError.message);
+        console.log('📤 Uploading without thumbnail...');
+        
+        // Fallback: upload without thumbnail
+        const finishResponse = await axios.post(`https://graph.facebook.com/v18.0/${PAGE_ID}/videos`, null, {
+          params: finishParams
+        });
+
+        console.log('✅ Published without thumbnail! ID:', finishResponse.data.id);
+        return finishResponse.data;
+      }
+    } else {
+      // No thumbnail available
+      const finishResponse = await axios.post(`https://graph.facebook.com/v18.0/${PAGE_ID}/videos`, null, {
+        params: finishParams
+      });
+
+      console.log('✅ Published! ID:', finishResponse.data.id);
+      return finishResponse.data;
+    }
 
   } catch (error) {
     console.error('❌ Facebook error:', error.response?.data || error.message);
@@ -1009,7 +1095,7 @@ async function initializeBot() {
   await loadProcessedVideos();
   await loadAnalytics();
   
-  console.log('✅ Bot ready! Unlimited mode enabled 🚀');
+  console.log('✅ Bot ready! Unlimited mode with thumbnail support enabled 🚀🖼️');
   console.log(`📊 Loaded: ${processedVideos.size} videos, ${analytics.totalVideos} total processed`);
 }
 
@@ -1046,4 +1132,4 @@ async function gracefulShutdown() {
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
 
-console.log('✅ Bot script loaded - UNLIMITED MODE 🚀');
+console.log('✅ Bot script loaded - UNLIMITED MODE with THUMBNAIL SUPPORT 🚀🖼️');
