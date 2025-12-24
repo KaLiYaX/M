@@ -26,6 +26,7 @@ if (!TELEGRAM_TOKEN || !PAGE_ACCESS_TOKEN || !PAGE_ID) {
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const YOUTUBE_API_BASE = 'https://youtube-apis.vercel.app/api/ytmp4';
+const YOUTUBE_SEARCH_API = 'https://youtube-apis.vercel.app/api/search';
 
 let ADMIN_ID = null;
 const videoQueue = [];
@@ -37,12 +38,14 @@ let analytics = {
   totalSize: 0,
   shortsCount: 0,
   duplicatesSkipped: 0,
+  searchesPerformed: 0,
   startTime: Date.now(),
   lastSaved: null
 };
 const scheduledPosts = [];
 const userSessions = new Map();
 const activeDownloads = new Map();
+const searchCache = new Map();
 
 // ============================================
 // FILE MANAGEMENT
@@ -152,6 +155,35 @@ function detectYouTubeUrl(text) {
 }
 
 // ============================================
+// YOUTUBE SEARCH
+// ============================================
+
+async function searchYouTube(query) {
+  try {
+    console.log('🔍 Searching YouTube for:', query);
+    analytics.searchesPerformed++;
+    
+    const response = await axios.get(YOUTUBE_SEARCH_API, {
+      params: { q: query },
+      timeout: 30000
+    });
+
+    if (!response.data.status || !response.data.data.results) {
+      throw new Error('No results found');
+    }
+
+    // Filter only video results (exclude channels)
+    const videos = response.data.data.results.filter(r => r.type === 'video');
+    
+    console.log(`✅ Found ${videos.length} videos`);
+    return videos;
+  } catch (error) {
+    console.error('❌ Search error:', error.message);
+    throw new Error('Search failed: ' + error.message);
+  }
+}
+
+// ============================================
 // HELPER FUNCTIONS
 // ============================================
 
@@ -170,7 +202,9 @@ function getUserSession(userId) {
       customCaption: null,
       selectedQuality: '360',
       lastVideoData: null,
-      pendingDuplicates: []
+      pendingDuplicates: [],
+      searchResults: [],
+      lastSearchQuery: null
     });
   }
   return userSessions.get(userId);
@@ -200,6 +234,18 @@ function getProgressBar(percent) {
   const filled = Math.round(percent / 5);
   const empty = 20 - filled;
   return '█'.repeat(filled) + '░'.repeat(empty);
+}
+
+function formatViews(views) {
+  if (views >= 1000000) return (views / 1000000).toFixed(1) + 'M';
+  if (views >= 1000) return (views / 1000).toFixed(1) + 'K';
+  return views.toString();
+}
+
+function formatDuration(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 // ============================================
@@ -232,10 +278,44 @@ async function downloadThumbnail(thumbnailUrl) {
 const keyboards = {
   main: () => ({
     inline_keyboard: [
-      [{ text: '📹 Add Video', callback_data: 'add_video' }, { text: '📋 View Queue', callback_data: 'view_queue' }],
-      [{ text: '⚙️ Settings', callback_data: 'settings' }, { text: '📊 Analytics', callback_data: 'analytics' }],
-      [{ text: '⏰ Schedule', callback_data: 'schedule_menu' }, { text: '❓ Help', callback_data: 'help' }]
+      [{ text: '🔍 Search Videos', callback_data: 'search_videos' }, { text: '📹 Add by URL', callback_data: 'add_video' }],
+      [{ text: '📋 View Queue', callback_data: 'view_queue' }, { text: '📊 Analytics', callback_data: 'analytics' }],
+      [{ text: '⚙️ Settings', callback_data: 'settings' }, { text: '❓ Help', callback_data: 'help' }]
     ]
+  }),
+  
+  searchResults: (results, page = 0, totalPages = 1) => {
+    const buttons = [];
+    const start = page * 5;
+    const end = Math.min(start + 5, results.length);
+    
+    for (let i = start; i < end; i++) {
+      const video = results[i];
+      const icon = video.type === 'shorts' ? '📱' : '🎬';
+      const title = video.title.substring(0, 35);
+      buttons.push([{ 
+        text: `${icon} ${title}...`, 
+        callback_data: `select_video_${i}` 
+      }]);
+    }
+    
+    // Navigation
+    const nav = [];
+    if (page > 0) nav.push({ text: '⬅️ Previous', callback_data: `search_page_${page - 1}` });
+    if (page < totalPages - 1) nav.push({ text: 'Next ➡️', callback_data: `search_page_${page + 1}` });
+    if (nav.length > 0) buttons.push(nav);
+    
+    buttons.push([{ text: '🔍 New Search', callback_data: 'search_videos' }, { text: '🔙 Menu', callback_data: 'main_menu' }]);
+    
+    return { inline_keyboard: buttons };
+  },
+  
+  videoConfirm: (index, isDuplicate) => ({
+    inline_keyboard: [
+      [{ text: '✅ Add to Queue', callback_data: `confirm_video_${index}` }],
+      isDuplicate ? [{ text: '⚠️ Duplicate - Add Anyway?', callback_data: `confirm_duplicate_${index}` }] : [],
+      [{ text: '🔙 Back to Results', callback_data: 'back_to_search' }]
+    ].filter(row => row.length > 0)
   }),
   
   quality: (current) => {
@@ -288,7 +368,12 @@ bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id, `
 👋 *Welcome ${msg.from.first_name}!*
 
-🤖 *YouTube to Facebook Bot - UNLIMITED*
+🤖 *YouTube to Facebook Bot - ULTIMATE*
+
+✨ *NEW: Search Feature!*
+🔍 Search videos directly in bot
+🖼️ Preview with thumbnails
+📊 See views, duration, channel
 
 ✅ Regular YouTube videos
 ✅ YouTube Shorts 📱
@@ -301,6 +386,7 @@ bot.onText(/\/start/, (msg) => {
 ✅ YouTube thumbnails 🖼️
 
 *Features:*
+🔍 Search & preview before adding
 💾 Data saved automatically
 🔄 Survives bot restarts
 🔍 Smart duplicate detection
@@ -309,11 +395,9 @@ bot.onText(/\/start/, (msg) => {
 🚀 Unlimited file sizes
 🖼️ Auto thumbnail from YouTube
 
-*Supported URLs:*
-🔗 youtube.com/watch?v=...
-🔗 youtu.be/...
-🔗 youtube.com/shorts/... 📱
-🔗 m.youtube.com/watch?v=...
+*Two Ways to Add Videos:*
+1️⃣ 🔍 Search videos in bot
+2️⃣ 📹 Paste YouTube URL directly
   `, { parse_mode: 'Markdown', reply_markup: keyboards.main() });
 });
 
@@ -336,20 +420,160 @@ bot.on('callback_query', async (query) => {
       });
     }
     
-    else if (data === 'add_video') {
+    else if (data === 'search_videos') {
       await bot.editMessageText(
-        '📹 *Add Video - UNLIMITED*\n\n✅ No size limits\n✅ Shorts & Regular videos 📱\n✅ Pause/Resume support ⏯️\n✅ Smart progress (3-10s)\n🔍 Duplicate detection enabled\n🖼️ Auto thumbnail support\n\nSend YouTube links:',
+        '🔍 *Search YouTube Videos*\n\n' +
+        '✨ Search by keywords\n' +
+        '📊 See views, duration & channel\n' +
+        '🖼️ Preview thumbnails\n' +
+        '✅ Select & add to queue\n\n' +
+        '*Send your search query:*\n' +
+        'Example: "lelena", "sinhala songs", etc.',
+        {
+          chat_id: msg.chat.id, 
+          message_id: msg.message_id, 
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [[{ text: '🔙 Back', callback_data: 'main_menu' }]] }
+        }
+      );
+      session.waitingForSearch = true;
+    }
+    
+    else if (data === 'add_video') {
+      session.waitingForSearch = false;
+      await bot.editMessageText(
+        '📹 *Add Video by URL - UNLIMITED*\n\n✅ No size limits\n✅ Shorts & Regular videos 📱\n✅ Pause/Resume support ⏯️\n✅ Smart progress (3-10s)\n🔍 Duplicate detection enabled\n🖼️ Auto thumbnail support\n\nSend YouTube links:',
         { chat_id: msg.chat.id, message_id: msg.message_id, parse_mode: 'Markdown',
           reply_markup: { inline_keyboard: [[{ text: '🔙 Back', callback_data: 'main_menu' }]] }
         }
       );
     }
     
+    else if (data.startsWith('search_page_')) {
+      const page = parseInt(data.replace('search_page_', ''));
+      const totalPages = Math.ceil(session.searchResults.length / 5);
+      
+      await bot.editMessageText(
+        `🔍 *Search Results* (Page ${page + 1}/${totalPages})\n\n` +
+        `Query: "${session.lastSearchQuery}"\n` +
+        `Found: ${session.searchResults.length} videos\n\n` +
+        `Select a video:`,
+        {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id,
+          parse_mode: 'Markdown',
+          reply_markup: keyboards.searchResults(session.searchResults, page, totalPages)
+        }
+      );
+    }
+    
+    else if (data.startsWith('select_video_')) {
+      const index = parseInt(data.replace('select_video_', ''));
+      const video = session.searchResults[index];
+      
+      if (!video) {
+        return bot.answerCallbackQuery(query.id, { text: '❌ Video not found' });
+      }
+      
+      const isDuplicate = isAlreadyProcessed(video.videoId);
+      const inQueue = isInQueue(video.videoId);
+      const icon = video.type === 'shorts' ? '📱' : '🎬';
+      
+      let statusText = '';
+      if (isDuplicate) statusText = '\n\n⚠️ *DUPLICATE* - Already posted';
+      else if (inQueue) statusText = '\n\n⏳ *IN QUEUE* - Already added';
+      
+      // Send video thumbnail
+      try {
+        await bot.sendPhoto(msg.chat.id, video.thumbnail || video.image, {
+          caption: 
+            `${icon} *${video.title}*\n\n` +
+            `👤 ${video.author.name}\n` +
+            `👁️ ${formatViews(video.views)} views\n` +
+            `⏱️ ${video.duration.timestamp}\n` +
+            `📅 ${video.ago}` +
+            statusText,
+          parse_mode: 'Markdown',
+          reply_markup: inQueue ? 
+            { inline_keyboard: [[{ text: '🔙 Back to Results', callback_data: 'back_to_search' }]] } :
+            keyboards.videoConfirm(index, isDuplicate)
+        });
+      } catch (photoError) {
+        console.error('Photo send error:', photoError.message);
+        await bot.sendMessage(msg.chat.id,
+          `${icon} *${video.title}*\n\n` +
+          `👤 ${video.author.name}\n` +
+          `👁️ ${formatViews(video.views)} views\n` +
+          `⏱️ ${video.duration.timestamp}\n` +
+          `📅 ${video.ago}` +
+          statusText,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: inQueue ? 
+              { inline_keyboard: [[{ text: '🔙 Back to Results', callback_data: 'back_to_search' }]] } :
+              keyboards.videoConfirm(index, isDuplicate)
+          }
+        );
+      }
+    }
+    
+    else if (data.startsWith('confirm_video_') || data.startsWith('confirm_duplicate_')) {
+      const index = parseInt(data.split('_').pop());
+      const video = session.searchResults[index];
+      
+      if (!video) {
+        return bot.answerCallbackQuery(query.id, { text: '❌ Video not found' });
+      }
+      
+      const isDuplicate = isAlreadyProcessed(video.videoId);
+      const forceDuplicate = data.startsWith('confirm_duplicate_');
+      
+      if (isDuplicate && !forceDuplicate) {
+        return bot.answerCallbackQuery(query.id, { 
+          text: '⚠️ This is a duplicate! Use "Add Anyway" to proceed.', 
+          show_alert: true 
+        });
+      }
+      
+      addToQueue(msg.chat.id, video.url, session.selectedQuality, from.first_name, video.type, video.videoId, forceDuplicate);
+      
+      const icon = video.type === 'shorts' ? '📱' : '🎬';
+      await bot.sendMessage(msg.chat.id,
+        `✅ *Added to Queue!*\n\n${icon} ${video.title.substring(0, 50)}...\n\n⏳ Processing will start soon.`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [[{ text: '📋 View Queue', callback_data: 'view_queue' }]] }
+        }
+      );
+      
+      if (!videoQueue.some(v => v.status === 'processing')) processQueue();
+    }
+    
+    else if (data === 'back_to_search') {
+      if (session.searchResults.length > 0) {
+        const totalPages = Math.ceil(session.searchResults.length / 5);
+        await bot.sendMessage(msg.chat.id,
+          `🔍 *Search Results*\n\n` +
+          `Query: "${session.lastSearchQuery}"\n` +
+          `Found: ${session.searchResults.length} videos\n\n` +
+          `Select a video:`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: keyboards.searchResults(session.searchResults, 0, totalPages)
+          }
+        );
+      } else {
+        await bot.sendMessage(msg.chat.id, '🔍 Search cleared.', {
+          reply_markup: keyboards.main()
+        });
+      }
+    }
+    
     else if (data === 'view_queue') {
       if (videoQueue.length === 0) {
         await bot.editMessageText('📭 *Queue Empty*\n\nAdd videos to get started!', {
           chat_id: msg.chat.id, message_id: msg.message_id, parse_mode: 'Markdown',
-          reply_markup: { inline_keyboard: [[{ text: '📹 Add Video', callback_data: 'add_video' }]] }
+          reply_markup: { inline_keyboard: [[{ text: '🔍 Search', callback_data: 'search_videos' }, { text: '📹 Add URL', callback_data: 'add_video' }]] }
         });
       } else {
         let text = `📋 *Queue* (${videoQueue.length})\n\n`;
@@ -378,6 +602,7 @@ bot.on('callback_query', async (query) => {
       await bot.editMessageText(`
 📊 *Analytics*
 
+🔍 Searches: ${analytics.searchesPerformed}
 📹 Total: ${analytics.totalVideos}
 📱 Shorts: ${analytics.shortsCount}
 ✅ Success: ${analytics.successfulPosts}
@@ -390,7 +615,6 @@ bot.on('callback_query', async (query) => {
 
 ⏱️ Uptime: ${uptime} min
 📋 Queue: ${videoQueue.length}
-⏰ Scheduled: ${scheduledPosts.length}
 🗂️ History: ${processedVideos.size} videos
 
 💾 Last Saved: ${analytics.lastSaved ? new Date(analytics.lastSaved).toLocaleString() : 'Never'}
@@ -401,6 +625,7 @@ bot.on('callback_query', async (query) => {
     }
     
     else if (data === 'settings') {
+      session.waitingForSearch = false;
       await bot.editMessageText('⚙️ *Settings*', {
         chat_id: msg.chat.id, message_id: msg.message_id,
         parse_mode: 'Markdown', reply_markup: keyboards.settings()
@@ -414,42 +639,19 @@ bot.on('callback_query', async (query) => {
       });
     }
     
+    else if (data.startsWith('quality_')) {
+      session.selectedQuality = data.split('_')[1];
+      await bot.editMessageText(`🎬 *Quality Updated*\n\n${session.selectedQuality}p ✓`, {
+        chat_id: msg.chat.id, message_id: msg.message_id,
+        parse_mode: 'Markdown', reply_markup: keyboards.quality(session.selectedQuality)
+      });
+    }
+    
     else if (data === 'save_data') {
       await saveProcessedVideos();
       await saveAnalytics();
       await bot.editMessageText(
-        `💾 *Data Saved!*\n\n✅ History: ${processedVideos.size} videos\n✅ Analytics updated\n✅ Time: ${new Date().toLocaleString()}\n\nData will persist after bot restart.`,
-        {
-          chat_id: msg.chat.id, message_id: msg.message_id, parse_mode: 'Markdown',
-          reply_markup: keyboards.settings()
-        }
-      );
-    }
-    
-    else if (data === 'data_info') {
-      const historyExists = await fs.access(HISTORY_FILE).then(() => true).catch(() => false);
-      const analyticsExists = await fs.access(ANALYTICS_FILE).then(() => true).catch(() => false);
-      
-      let historySize = 0, analyticsSize = 0;
-      try {
-        if (historyExists) {
-          const stats = await fs.stat(HISTORY_FILE);
-          historySize = (stats.size / 1024).toFixed(2);
-        }
-        if (analyticsExists) {
-          const stats = await fs.stat(ANALYTICS_FILE);
-          analyticsSize = (stats.size / 1024).toFixed(2);
-        }
-      } catch {}
-      
-      await bot.editMessageText(
-        `📊 *Data Information*\n\n📁 Storage Location:\n\`${DATA_DIR}\`\n\n` +
-        `📂 History File:\n${historyExists ? '✅ Exists' : '❌ Not found'}\n` +
-        `Size: ${historySize} KB\nVideos: ${processedVideos.size}\n\n` +
-        `📂 Analytics File:\n${analyticsExists ? '✅ Exists' : '❌ Not found'}\n` +
-        `Size: ${analyticsSize} KB\n\n` +
-        `💾 Auto-save: Every 5 minutes\n` +
-        `🔄 Last saved: ${analytics.lastSaved ? new Date(analytics.lastSaved).toLocaleString() : 'Never'}`,
+        `💾 *Data Saved!*\n\n✅ History: ${processedVideos.size} videos\n✅ Analytics updated\n✅ Searches: ${analytics.searchesPerformed}\n✅ Time: ${new Date().toLocaleString()}\n\nData will persist after bot restart.`,
         {
           chat_id: msg.chat.id, message_id: msg.message_id, parse_mode: 'Markdown',
           reply_markup: keyboards.settings()
@@ -481,14 +683,6 @@ bot.on('callback_query', async (query) => {
           reply_markup: keyboards.settings()
         }
       );
-    }
-    
-    else if (data.startsWith('quality_')) {
-      session.selectedQuality = data.split('_')[1];
-      await bot.editMessageText(`🎬 *Quality Updated*\n\n${session.selectedQuality}p ✓`, {
-        chat_id: msg.chat.id, message_id: msg.message_id,
-        parse_mode: 'Markdown', reply_markup: keyboards.quality(session.selectedQuality)
-      });
     }
     
     else if (data.startsWith('duplicate_confirm_')) {
@@ -552,8 +746,21 @@ bot.on('callback_query', async (query) => {
     }
     
     else if (data === 'help') {
+      session.waitingForSearch = false;
       await bot.editMessageText(`
 ❓ *Help*
+
+*Two Ways to Add Videos:*
+1️⃣ 🔍 Search in bot
+   - Click "Search Videos"
+   - Enter keywords
+   - Preview with thumbnails
+   - Select & add
+
+2️⃣ 📹 Paste YouTube URL
+   - Click "Add by URL"
+   - Paste any YouTube link
+   - Auto-detects & adds
 
 *Supported URLs:*
 🔗 youtube.com/watch?v=...
@@ -562,6 +769,7 @@ bot.on('callback_query', async (query) => {
 🔗 m.youtube.com/watch?v=...
 
 *Features:*
+🔍 Search & preview videos
 📹 Multiple video queue
 📱 YouTube Shorts support
 🚀 Unlimited file sizes
@@ -569,7 +777,6 @@ bot.on('callback_query', async (query) => {
 📊 Smart progress updates (3-10s)
 🔍 Duplicate detection
 💾 Persistent storage
-⏰ Schedule posts
 ✍️ Custom captions
 🎬 Quality selection
 🖼️ Auto YouTube thumbnails
@@ -605,11 +812,72 @@ Admin: @${ADMIN_USERNAME}
 bot.on('message', async (msg) => {
   if (!msg.text || msg.text.startsWith('/') || !isAdmin(msg)) return;
 
+  const session = getUserSession(msg.from.id);
+
+  // Handle search query
+  if (session.waitingForSearch) {
+    session.waitingForSearch = false;
+    
+    const searchMsg = await bot.sendMessage(msg.chat.id, 
+      `🔍 *Searching YouTube...*\n\nQuery: "${msg.text}"\n\n⏳ Please wait...`,
+      { parse_mode: 'Markdown' }
+    );
+
+    try {
+      const results = await searchYouTube(msg.text);
+      
+      if (results.length === 0) {
+        await bot.editMessageText(
+          `❌ *No Results Found*\n\nQuery: "${msg.text}"\n\nTry different keywords.`,
+          {
+            chat_id: msg.chat.id,
+            message_id: searchMsg.message_id,
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: [[{ text: '🔍 Try Again', callback_data: 'search_videos' }]] }
+          }
+        );
+        return;
+      }
+
+      session.searchResults = results;
+      session.lastSearchQuery = msg.text;
+      
+      const totalPages = Math.ceil(results.length / 5);
+      const shorts = results.filter(v => v.type === 'shorts').length;
+      const regular = results.length - shorts;
+      
+      await bot.editMessageText(
+        `🔍 *Search Results*\n\n` +
+        `Query: "${msg.text}"\n` +
+        `Found: ${results.length} videos\n` +
+        `🎬 Regular: ${regular} | 📱 Shorts: ${shorts}\n\n` +
+        `Select a video to preview:`,
+        {
+          chat_id: msg.chat.id,
+          message_id: searchMsg.message_id,
+          parse_mode: 'Markdown',
+          reply_markup: keyboards.searchResults(results, 0, totalPages)
+        }
+      );
+      
+    } catch (error) {
+      await bot.editMessageText(
+        `❌ *Search Failed*\n\n${error.message}\n\nTry again later.`,
+        {
+          chat_id: msg.chat.id,
+          message_id: searchMsg.message_id,
+          parse_mode: 'Markdown',
+          reply_markup: keyboards.main()
+        }
+      );
+    }
+    return;
+  }
+
+  // Handle YouTube URLs
   const matches = detectYouTubeUrl(msg.text);
   if (matches.length === 0) return;
 
-  const session = getUserSession(msg.from.id);
-  
   const newVideos = [];
   const duplicates = [];
   const inQueue = [];
@@ -1095,8 +1363,9 @@ async function initializeBot() {
   await loadProcessedVideos();
   await loadAnalytics();
   
-  console.log('✅ Bot ready! Unlimited mode with thumbnail support enabled 🚀🖼️');
+  console.log('✅ Bot ready! ULTIMATE MODE with Search & Thumbnail support enabled 🔍🖼️🚀');
   console.log(`📊 Loaded: ${processedVideos.size} videos, ${analytics.totalVideos} total processed`);
+  console.log(`🔍 Total searches performed: ${analytics.searchesPerformed}`);
 }
 
 initializeBot().catch(error => {
@@ -1132,4 +1401,4 @@ async function gracefulShutdown() {
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
 
-console.log('✅ Bot script loaded - UNLIMITED MODE with THUMBNAIL SUPPORT 🚀🖼️');
+console.log('✅ Bot script loaded - ULTIMATE MODE with SEARCH & THUMBNAIL SUPPORT 🔍🖼️🚀');
