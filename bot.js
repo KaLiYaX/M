@@ -271,7 +271,7 @@ bot.onText(/\/start/, (msg) => {
 ✅ YouTube Shorts 📱
 ✅ No size limits 🚀
 ✅ Pause/Resume downloads ⏯️
-✅ Real-time progress (1% updates) 📊
+✅ Smart progress (3-10s) 📊
 ✅ Auto posting to Facebook
 ✅ Duplicate detection 🔍
 ✅ Persistent history 💾
@@ -281,7 +281,7 @@ bot.onText(/\/start/, (msg) => {
 🔄 Survives bot restarts
 🔍 Smart duplicate detection
 ⏯️ Pause/Resume downloads
-📊 Detailed progress tracking
+📊 Progress updates every 3-10s
 🚀 Unlimited file sizes
 
 *Supported URLs:*
@@ -313,7 +313,7 @@ bot.on('callback_query', async (query) => {
     
     else if (data === 'add_video') {
       await bot.editMessageText(
-        '📹 *Add Video - UNLIMITED*\n\n✅ No size limits\n✅ Shorts & Regular videos 📱\n✅ Pause/Resume support ⏯️\n🔍 Duplicate detection enabled\n\nSend YouTube links:',
+        '📹 *Add Video - UNLIMITED*\n\n✅ No size limits\n✅ Shorts & Regular videos 📱\n✅ Pause/Resume support ⏯️\n✅ Smart progress (3-10s)\n🔍 Duplicate detection enabled\n\nSend YouTube links:',
         { chat_id: msg.chat.id, message_id: msg.message_id, parse_mode: 'Markdown',
           reply_markup: { inline_keyboard: [[{ text: '🔙 Back', callback_data: 'main_menu' }]] }
         }
@@ -541,7 +541,7 @@ bot.on('callback_query', async (query) => {
 📱 YouTube Shorts support
 🚀 Unlimited file sizes
 ⏯️ Pause/Resume downloads
-📊 Real-time progress (1%)
+📊 Smart progress updates (3-10s)
 🔍 Duplicate detection
 💾 Persistent storage
 ⏰ Schedule posts
@@ -558,7 +558,7 @@ bot.on('callback_query', async (query) => {
 ⏸️ Pause active downloads
 ▶️ Resume paused downloads
 ❌ Cancel unwanted downloads
-📊 Real-time progress tracking
+📊 Progress updates every 3-10s
 
 Admin: @${ADMIN_USERNAME}
       `, {
@@ -752,6 +752,7 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
 
     let lastPercent = -1;
     let lastUpdateTime = Date.now();
+    const MIN_UPDATE_INTERVAL = 3000; // 3 seconds minimum between updates
 
     videoResponse.data.on('data', async (chunk) => {
       // Check if paused
@@ -771,9 +772,15 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
       const now = Date.now();
       const elapsed = (now - downloadState.startTime) / 1000;
       const speed = downloadState.downloadedBytes / elapsed;
+      const timeSinceLastUpdate = now - lastUpdateTime;
 
-      // Update every 1% or every 2 seconds
-      if (percent !== lastPercent && (percent > lastPercent || now - lastUpdateTime > 2000)) {
+      // Update only if:
+      // 1. Percent changed AND at least 3 seconds passed
+      // 2. OR 10 seconds passed (force update)
+      const shouldUpdate = (percent !== lastPercent && timeSinceLastUpdate >= MIN_UPDATE_INTERVAL) || 
+                          timeSinceLastUpdate >= 10000;
+
+      if (shouldUpdate) {
         lastPercent = percent;
         lastUpdateTime = now;
 
@@ -797,7 +804,10 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
             }
           );
         } catch (err) {
-          // Ignore edit errors
+          // Ignore edit errors (Telegram rate limit)
+          if (err.response?.body?.error_code === 429) {
+            console.log('⚠️ Rate limited, skipping update');
+          }
         }
       }
     });
@@ -895,14 +905,25 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
     const chunkSize = 5 * 1024 * 1024; // 5MB chunks
     let offset = 0;
     let lastPercent = -1;
+    let lastUploadUpdate = Date.now();
+    const MIN_UPLOAD_UPDATE_INTERVAL = 3000; // 3 seconds between updates
 
     while (offset < videoBuffer.length) {
       const chunk = videoBuffer.slice(offset, Math.min(offset + chunkSize, videoBuffer.length));
       const percent = Math.floor((offset / videoBuffer.length) * 100);
+      const now = Date.now();
+      const timeSinceLastUpdate = now - lastUploadUpdate;
 
-      // Update progress every 1%
-      if (percent !== lastPercent) {
+      // Update only if:
+      // 1. Percent changed AND at least 3 seconds passed
+      // 2. OR 10 seconds passed (force update)
+      const shouldUpdate = (percent !== lastPercent && timeSinceLastUpdate >= MIN_UPLOAD_UPDATE_INTERVAL) || 
+                          timeSinceLastUpdate >= 10000;
+
+      if (shouldUpdate) {
         lastPercent = percent;
+        lastUploadUpdate = now;
+        
         try {
           await bot.editMessageText(
             `${icon} *Uploading to Facebook*\n\n${videoTitle.substring(0, 45)}...\n\n` +
@@ -916,7 +937,10 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
             }
           );
         } catch (err) {
-          // Ignore edit errors
+          // Ignore edit errors (Telegram rate limit)
+          if (err.response?.body?.error_code === 429) {
+            console.log('⚠️ Upload: Rate limited, skipping update');
+          }
         }
       }
 
