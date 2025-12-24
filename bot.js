@@ -1572,52 +1572,94 @@ async function uploadVideoToFacebook(videoBuffer, title, chatId, messageId, vide
 // ============================================
 
 async function initializeBot() {
-  console.log('🚀 Initializing bot...');
-  
-  await ensureDataDirectory();
-  await loadProcessedVideos();
-  await loadAnalytics();
-  
-  console.log('✅ Bot ready! ULTIMATE MODE with Multi-Page, Search & Thumbnail support enabled 📄🔍🖼️🚀');
-  console.log(`📊 Loaded: ${processedVideos.size} videos, ${analytics.totalVideos} total processed`);
-  console.log(`🔍 Total searches performed: ${analytics.searchesPerformed}`);
-  console.log(`📄 Configured pages: ${PAGE_IDS.length}`);
-  PAGE_IDS.forEach((id, i) => {
-    console.log(`   ${i + 1}. ${PAGE_NAMES[i]} (ID: ${id})`);
-  });
+  try {
+    console.log('🚀 Initializing bot...');
+    
+    await ensureDataDirectory();
+    console.log('✅ Data directory ready');
+    
+    await loadProcessedVideos();
+    console.log('✅ Processed videos loaded');
+    
+    await loadAnalytics();
+    console.log('✅ Analytics loaded');
+    
+    // Initialize page stats
+    PAGE_IDS.forEach(pageId => {
+      if (!analytics.pageStats[pageId]) {
+        analytics.pageStats[pageId] = { success: 0, failed: 0 };
+      }
+    });
+    
+    console.log('✅ Bot ready! ULTIMATE MODE with Multi-Page, Search & Thumbnail support enabled 📄🔍🖼️🚀');
+    console.log(`📊 Loaded: ${processedVideos.size} videos, ${analytics.totalVideos} total processed`);
+    console.log(`🔍 Total searches performed: ${analytics.searchesPerformed}`);
+    console.log(`📄 Configured pages: ${PAGE_IDS.length}`);
+    PAGE_IDS.forEach((id, i) => {
+      console.log(`   ${i + 1}. ${PAGE_NAMES[i]} (ID: ${id})`);
+    });
+    
+    console.log('🎯 Bot is now running and ready to accept commands!');
+    
+  } catch (error) {
+    console.error('❌ Initialization error:', error.message);
+    console.error(error.stack);
+    throw error;
+  }
 }
 
 initializeBot().catch(error => {
-  console.error('❌ Initialization error:', error);
+  console.error('❌ Failed to initialize bot:', error.message);
+  console.error('Please check your configuration and try again.');
+  process.exit(1);
 });
 
 // ============================================
 // ERROR HANDLING
 // ============================================
 
-bot.on('polling_error', (error) => console.error('Polling:', error.message));
-process.on('uncaughtException', (error) => console.error('Exception:', error));
-process.on('unhandledRejection', (error) => console.error('Rejection:', error));
+bot.on('polling_error', (error) => {
+  console.error('❌ Polling error:', error.message);
+  if (error.code === 'EFATAL') {
+    console.error('Fatal error - check your TELEGRAM_TOKEN');
+  }
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error.message);
+  console.error(error.stack);
+});
+
+process.on('unhandledRejection', (error) => {
+  console.error('❌ Unhandled Rejection:', error);
+});
 
 // ============================================
 // GRACEFUL SHUTDOWN
 // ============================================
 
-async function gracefulShutdown() {
-  console.log('\n🛑 Shutting down gracefully...');
+async function gracefulShutdown(signal) {
+  console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
   
-  console.log('💾 Saving data...');
-  await saveProcessedVideos();
-  await saveAnalytics();
-  
-  console.log('✅ Data saved successfully');
-  console.log('👋 Goodbye!');
-  
-  bot.stopPolling();
-  process.exit(0);
+  try {
+    console.log('💾 Saving data...');
+    await saveProcessedVideos();
+    await saveAnalytics();
+    
+    console.log('✅ Data saved successfully');
+    console.log('🛑 Stopping bot polling...');
+    
+    bot.stopPolling();
+    
+    console.log('👋 Goodbye!');
+    process.exit(0);
+  } catch (error) {
+    console.error('❌ Error during shutdown:', error.message);
+    process.exit(1);
+  }
 }
 
-process.on('SIGINT', gracefulShutdown);
-process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 console.log('✅ Bot script loaded - ULTIMATE MODE with MULTI-PAGE, SEARCH & THUMBNAIL SUPPORT 📄🔍🖼️🚀');
