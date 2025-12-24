@@ -1,0 +1,35 @@
+{
+  "name": "youtube-facebook-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot to download YouTube videos and post to Facebook",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js",
+    "test": "node bot.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "youtube",
+    "facebook",
+    "downloader"
+  ],
+  "author": "Kalindu Gaweshana",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "discord.js": "^14.25.1",
+    "dotenv": "^16.3.1",
+    "form-data": "^4.0.0",
+    "node-schedule": "^2.1.1",
+    "node-telegram-bot-api": "^0.64.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
