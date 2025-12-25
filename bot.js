@@ -998,11 +998,11 @@ async function processVideo(chatId, url, quality, userName, customCaption, type,
     if (!response.data.status) throw new Error('Video not found');
 
     const videoData = response.data.data;
-    const title = videoData.metadata.title;
-    const fileSize = videoData.download.size;
-    const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
-    const thumbnailUrl = videoData.metadata.thumbnail || videoData.metadata.image;
-
+    const title = videoData.metadata?.title || 'Untitled Video';
+    const fileSize = videoData.download?.size || 0;
+    const fileSizeMB = fileSize > 0 ? (fileSize / (1024 * 1024)).toFixed(2) : 0;
+    const thumbnailUrl = videoData.metadata?.thumbnail || videoData.metadata?.image || null;
+    
     analytics.totalVideos++;
     analytics.totalSize += parseFloat(fileSizeMB);
 
