@@ -1,0 +1,25 @@
+{
+  "bot-name": "BYTE-MD",
+  "description": "BYTE-MD made for people on Earth",
+  "logo": "https://raw.githubusercontent.com/HyHamza/HyHamza/refs/heads/main/Images/XByte-logo.png",
+  "keywords": ["bot"],
+  "documentation-link": "https://session.talkdrove.com",
+  "owner-verification": "talkdrove@gmail.com",
+  "env": {
+    "SESSION_ID": {
+      "description": "Put session id",
+      "value": "",
+      "required": true
+    },
+    "PREFIX": {
+      "description": "Bot command prefix, (e.g, . , ! @ etc",
+      "value": ".",
+      "required": true  
+    },
+    "PREMIUM_USERS": {
+      "description": "premium users",
+      "value": "923072380**",
+      "required": false
+    }
+  }
+}
